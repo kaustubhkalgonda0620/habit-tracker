@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-"Habit Tracker" — an Expo SDK 58 app (React Native 0.88, React 19.3, Expo Router, React Compiler and typed routes enabled) that runs on iOS, Android, and web. It uses npm (`package-lock.json`), so use `npx`, not `bunx`.
+"Habit Tracker" — an Expo SDK 58 app (React Native 0.88, React 19.3, Expo Router, React Compiler and typed routes enabled) that runs on iOS, Android, and web. It uses npm (`package-lock.json`), so use `npx`, not `bunx`. Requires Node 22.18+.
 
 ## Commands
 
@@ -53,5 +53,7 @@ Don't run `npm run reset-project`. It's left over from the Expo template and mov
 - `confirm.ts` — cross-platform destructive confirmation (`window.confirm` on web, `Alert.alert` on native).
 
 **Theming & layout.** `constants/theme.ts` defines `Colors` (light/dark), `Spacing`, `Fonts`, `BottomTabInset`, and `MaxContentWidth`. Use `ThemedText`/`ThemedView` and `useTheme()` rather than hard-coded colors. Screens wrap their content in `ScreenScrollView`, which handles safe-area insets, tab-bar clearance, the web top bar offset, and max content width.
+
+**Backend (in progress).** The app is still local-only (the README's "no account or server" is current behavior). `supabase/migrations/` holds the schema for upcoming auth + sync: normalized tables that mirror `AppState` (`profiles`, habits, logs, badges), each row owned by a user under row-level security, `updated_at` set by a DB trigger for incremental pulls, soft-deleted habits (`deleted_at`) so deletes reach other devices, and anon access revoked. Keep the migrations in step with `lib/app-state.ts` when the state shape changes. The client config is read from `EXPO_PUBLIC_SUPABASE_URL` and `EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY` in `.env.local`, which is gitignored.
 
 **Imports** use the `@/` alias for `src/` and `@/assets/` for `assets/`.
