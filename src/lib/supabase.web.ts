@@ -13,6 +13,8 @@ const inBrowser = typeof window !== 'undefined';
 
 export const supabase = createClient(url, key, {
   auth: {
+    // A fixed key (rather than one derived from the project ref) so tests can seed a session.
+    storageKey: 'auth:v1',
     storage: inBrowser ? window.localStorage : undefined,
     autoRefreshToken: inBrowser,
     persistSession: inBrowser,

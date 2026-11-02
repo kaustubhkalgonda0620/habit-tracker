@@ -4,10 +4,12 @@ import Animated, { FadeInDown } from 'react-native-reanimated';
 
 import { ChoiceChips } from '@/components/choice-chips';
 import { PrimaryButton } from '@/components/primary-button';
+import { SignIn } from '@/components/sign-in';
 import { ScreenScrollView } from '@/components/screen-scroll-view';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Spacing } from '@/constants/theme';
+import { useAuth } from '@/hooks/use-auth';
 import { useHabits } from '@/hooks/use-habits';
 import { useTheme } from '@/hooks/use-theme';
 import { ChallengeBadges } from '@/lib/challenges';
@@ -24,9 +26,10 @@ import { remindersSupported, requestReminderPermission } from '@/lib/reminders';
 
 const AccentColor = '#3c87f7';
 const ChallengeColor = '#F76B15';
-const Steps = 4;
+// Sign in, then the four setup steps (`step` 0–3).
+const Steps = 5;
 
-function StepDots({ step }: { step: number }) {
+function StepDots({ dot }: { dot: number }) {
   const theme = useTheme();
   return (
     <View style={styles.dots}>
@@ -35,8 +38,8 @@ function StepDots({ step }: { step: number }) {
           key={index}
           style={[
             styles.dot,
-            { backgroundColor: index <= step ? AccentColor : theme.backgroundSelected },
-            index === step && styles.dotCurrent,
+            { backgroundColor: index <= dot ? AccentColor : theme.backgroundSelected },
+            index === dot && styles.dotCurrent,
           ]}
         />
       ))}
@@ -78,7 +81,8 @@ function HabitOption({ habit, selected, onPress }: { habit: NewHabit; selected: 
 
 export default function OnboardingScreen() {
   const theme = useTheme();
-  const { completeOnboarding, settings } = useHabits();
+  const { completeOnboarding, settings, onboarded } = useHabits();
+  const { session } = useAuth();
   const [step, setStep] = useState(0);
   const [selected, setSelected] = useState<NewHabit[]>([SuggestedHabits[0], SuggestedHabits[1]]);
   const [customName, setCustomName] = useState('');
@@ -130,6 +134,22 @@ export default function OnboardingScreen() {
     completeOnboarding(selected, reminders);
   }
 
+  if (!session) {
+    // A user who already onboarded on this device only needs to sign in again, so no step dots.
+    return (
+      <ScreenScrollView standalone>
+        <View style={styles.topBar}>
+          <View />
+          {!onboarded && <StepDots dot={0} />}
+          <View style={styles.topBarSpacer} />
+        </View>
+        <Animated.View entering={FadeInDown.duration(350)} style={styles.step}>
+          <SignIn color={AccentColor} returning={onboarded} />
+        </Animated.View>
+      </ScreenScrollView>
+    );
+  }
+
   return (
     <ScreenScrollView standalone>
       <View style={styles.topBar}>
@@ -142,7 +162,7 @@ export default function OnboardingScreen() {
         ) : (
           <View />
         )}
-        <StepDots step={step} />
+        <StepDots dot={step + 1} />
         <View style={styles.topBarSpacer} />
       </View>
 

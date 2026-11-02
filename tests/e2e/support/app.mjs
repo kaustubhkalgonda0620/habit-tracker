@@ -68,14 +68,77 @@ export function saved(habits, overrides = {}) {
   };
 }
 
+// ---------- Auth ----------
+// Supabase is faked in the browser: tests never reach the real project or need a real email.
+
+export const TEST_EMAIL = 'tester@example.com';
+/** Codes the fake server accepts. Supabase sends 6–10 digits depending on a project setting. */
+export const TEST_CODE = '123456';
+export const TEST_LONG_CODE = '12345678';
+const AUTH_KEY = 'auth:v1'; // storageKey in src/lib/supabase.web.ts
+const SUPABASE_URL = /^https:\/\/[^/]+\.supabase\.co\//;
+
+function fakeSession(email = TEST_EMAIL) {
+  const base64url = (value) => Buffer.from(JSON.stringify(value)).toString('base64url');
+  const expiresAt = Math.floor(Date.now() / 1000) + 365 * 24 * 60 * 60;
+  const user = {
+    id: '00000000-0000-4000-8000-000000000001',
+    aud: 'authenticated',
+    role: 'authenticated',
+    email,
+    app_metadata: { provider: 'email', providers: ['email'] },
+    user_metadata: {},
+    created_at: '2026-01-01T00:00:00Z',
+  };
+  return {
+    access_token: `${base64url({ alg: 'HS256', typ: 'JWT' })}.${base64url({ sub: user.id, email, role: 'authenticated', exp: expiresAt })}.test`,
+    refresh_token: 'test-refresh-token',
+    token_type: 'bearer',
+    expires_in: expiresAt - Math.floor(Date.now() / 1000),
+    expires_at: expiresAt,
+    user,
+  };
+}
+
+/** Saved session for a signed-in user, as localStorage entries. Scenarios include it by default. */
+export function signedIn(email = TEST_EMAIL) {
+  return { [AUTH_KEY]: JSON.stringify(fakeSession(email)) };
+}
+
+/**
+ * Answers Supabase requests like the real auth API would. Records each request in `log` as
+ * `"<path> <email>"`; anything it doesn't handle is reported in `problems` and fails the test.
+ */
+async function fakeSupabase(context, log, problems) {
+  await context.route(SUPABASE_URL, async (route) => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    const body = request.postDataJSON?.() ?? {};
+    log.push(`${path} ${body.email ?? ''}`.trim());
+    const json = (status, data) =>
+      route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(data) });
+    if (path === '/auth/v1/otp') return json(200, {});
+    if (path === '/auth/v1/verify') {
+      return body.token === TEST_CODE || body.token === TEST_LONG_CODE
+        ? json(200, fakeSession(body.email))
+        : json(403, { code: 403, error_code: 'otp_expired', msg: 'Token has expired or is invalid' });
+    }
+    if (path === '/auth/v1/logout') return route.fulfill({ status: 204 });
+    problems.push(`unexpected Supabase request: ${request.method()} ${path}`);
+    return json(404, {});
+  });
+}
+
 // ---------- Scenarios ----------
 
 /**
  * Declares a browser test. `sanity: true` puts it in the sanity suite too.
  * `storage` seeds localStorage once before the app first loads (reloads keep app changes).
+ * Scenarios start signed in unless `signedIn: false`.
  */
 export function scenario(name, options, run) {
   const { sanity = false, storage = {}, path = '/', viewport, colorScheme } = options;
+  const seed = options.signedIn === false ? storage : { ...signedIn(), ...storage };
   test(sanity ? `@sanity ${name}` : name, async () => {
     const context = await browser.newContext({
       viewport: viewport ?? { width: 420, height: 900 },
@@ -86,14 +149,22 @@ export function scenario(name, options, run) {
       sessionStorage.setItem('e2e-seeded', '1');
       localStorage.clear();
       for (const [key, value] of Object.entries(entries)) localStorage.setItem(key, value);
-    }, storage);
+    }, seed);
+
+    const problems = [];
+    const authRequests = [];
+    await fakeSupabase(context, authRequests, problems);
 
     const page = await context.newPage();
     page.setDefaultTimeout(TIMEOUT);
-    const problems = [];
     page.on('pageerror', (error) => problems.push(`uncaught: ${error.message}`));
     page.on('console', (message) => {
-      if (message.type() === 'error') problems.push(`console.error: ${message.text().slice(0, 300)}`);
+      if (message.type() !== 'error') return;
+      // Chrome logs every 4xx itself. The fake Supabase server returns them on purpose (a wrong
+      // code), and anything it doesn't expect is already reported, so skip only those.
+      const fromSupabase = SUPABASE_URL.test(message.location().url ?? '');
+      if (fromSupabase && message.text().startsWith('Failed to load resource')) return;
+      problems.push(`console.error: ${message.text().slice(0, 300)}`);
     });
     const network = [];
     page.on('requestfailed', (request) =>
@@ -105,7 +176,7 @@ export function scenario(name, options, run) {
     // Confirmations (delete, reset) are accepted, as a user tapping "OK" would.
     page.on('dialog', (dialog) => dialog.accept());
 
-    const app = new App(page);
+    const app = new App(page, authRequests);
     try {
       await app.goto(path);
       await run(app);
@@ -131,8 +202,10 @@ export function scenario(name, options, run) {
 // ---------- Page helpers ----------
 
 class App {
-  constructor(page) {
+  constructor(page, authRequests = []) {
     this.page = page;
+    /** Requests the app made to (fake) Supabase, as `"<path> <email>"`. */
+    this.authRequests = authRequests;
   }
 
   async goto(path) {
@@ -168,8 +241,8 @@ class App {
   }
 
   /** Asserts the button containing `text` is disabled. */
-  async expectDisabled(text) {
-    const disabled = await this.find(text).evaluate(
+  async expectDisabled(text, options) {
+    const disabled = await this.find(text, options).evaluate(
       (el) => el.closest('[aria-disabled]')?.getAttribute('aria-disabled') === 'true'
     );
     assert.equal(disabled, true, `expected "${text}" to be disabled`);
@@ -223,6 +296,19 @@ class App {
 
   path() {
     return new URL(this.page.url()).pathname;
+  }
+
+  /** Signs in from the sign-in step with the fake server's code. */
+  async signIn(email = TEST_EMAIL, code = TEST_CODE) {
+    await this.page.getByLabel('Email', { exact: true }).fill(email);
+    await this.tap('Send code');
+    await this.page.getByLabel('Code', { exact: true }).fill(code);
+    await this.tap('Sign in', { exact: true });
+  }
+
+  /** The saved auth session, or null when signed out. */
+  async savedSession() {
+    return this.page.evaluate((key) => JSON.parse(localStorage.getItem(key) ?? 'null'), AUTH_KEY);
   }
 
   /** The app's saved state, straight from storage. */

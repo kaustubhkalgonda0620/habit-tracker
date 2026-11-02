@@ -7,6 +7,7 @@ import { ScreenScrollView } from '@/components/screen-scroll-view';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Spacing } from '@/constants/theme';
+import { useAuth } from '@/hooks/use-auth';
 import { useHabits } from '@/hooks/use-habits';
 import { confirmAction } from '@/lib/confirm';
 import { playFeedback } from '@/lib/feedback';
@@ -16,6 +17,7 @@ import {
   remindersSupported,
   requestReminderPermission,
 } from '@/lib/reminders';
+import { supabase } from '@/lib/supabase';
 
 const AccentColor = '#3c87f7';
 
@@ -36,6 +38,7 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 
 export default function SettingsScreen() {
   const { settings, updateSettings, resetToSampleData, resetEverything } = useHabits();
+  const { session } = useAuth();
   const [permission, setPermission] = useState<boolean | null>(null);
 
   useEffect(() => {
@@ -138,6 +141,18 @@ export default function SettingsScreen() {
           }>
           <ThemedText type="smallBold" style={styles.danger}>
             Start over
+          </ThemedText>
+        </Pressable>
+      </Section>
+
+      <Section title="Account">
+        <ThemedText type="small" themeColor="textSecondary">
+          Signed in as {session?.user.email}
+        </ThemedText>
+        {/* Clears the session on this device even if the server can't be reached. */}
+        <Pressable onPress={() => supabase.auth.signOut()}>
+          <ThemedText type="smallBold" style={{ color: AccentColor }}>
+            Sign out
           </ThemedText>
         </Pressable>
       </Section>

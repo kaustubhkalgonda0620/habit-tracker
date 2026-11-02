@@ -12,6 +12,8 @@ if (!url || !key) {
 
 export const supabase = createClient(url, key, {
   auth: {
+    // A fixed key (rather than one derived from the project ref) so tests can seed a session.
+    storageKey: 'auth:v1',
     storage: localStorage,
     autoRefreshToken: true,
     persistSession: true,

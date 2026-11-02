@@ -1,4 +1,4 @@
-import { day, habit, saved, scenario } from './support/app.mjs';
+import { day, habit, saved, scenario, TEST_CODE } from './support/app.mjs';
 
 const data = saved(
   [
@@ -20,7 +20,16 @@ scenario('no screen is wider than a phone', { sanity: true, storage: data, viewp
   await everyScreen(app, () => app.expectNoHorizontalOverflow());
 });
 
-scenario('onboarding fits a small phone', { viewport: { width: 320, height: 640 } }, async (app) => {
+scenario('onboarding fits a small phone', { signedIn: false, viewport: { width: 320, height: 640 } }, async (app) => {
+  await app.see('Send code');
+  await app.expectNoHorizontalOverflow();
+  await app.screenshot('sign-in-email');
+  await app.page.getByLabel('Email', { exact: true }).fill('someone.with.a.long.name@example.com');
+  await app.tap('Send code');
+  await app.expectNoHorizontalOverflow();
+  await app.screenshot('sign-in-code');
+  await app.page.getByLabel('Code', { exact: true }).fill(TEST_CODE);
+  await app.tap('Sign in', { exact: true });
   await app.expectNoHorizontalOverflow();
   await app.tap("Let's go");
   await app.expectNoHorizontalOverflow();
