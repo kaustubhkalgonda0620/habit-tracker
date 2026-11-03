@@ -29,15 +29,22 @@ scenario('returning user signs back in and keeps their habits', { sanity: true, 
   await app.see('Read');
 });
 
-scenario('signing out returns to sign-in and keeps habits on the device', { sanity: true, storage: saved([habit('Read')]) }, async (app) => {
+scenario('signing out clears the device; signing back in restores it from the account', { sanity: true, storage: saved([habit('Read')]) }, async (app) => {
+  await app.serverHas('habits', (rows) => rows.some((row) => row.name === 'Read'), 'habits uploaded');
   await app.openTab('Settings');
   await app.see(`Signed in as ${TEST_EMAIL}`);
+  await app.see('Everything is saved to your account');
   await app.tap('Sign out');
   await app.expectPath('/onboarding');
-  await app.see('Welcome back');
+  await app.see('Sign in to get started');
   assert.equal(await app.savedSession(), null);
-  assert.equal((await app.savedState()).habits.length, 1);
+  assert.deepEqual([(await app.savedState()).onboarded, (await app.savedState()).habits.length], [false, 0]);
   assert.ok(app.authRequests.includes('/auth/v1/logout'));
+  assert.deepEqual(app.dialogs, [], 'no warning when everything was saved');
+
+  await app.signIn();
+  await app.expectPath('/');
+  await app.see('Read');
 });
 
 scenario('a wrong code shows an error and can be retried', { signedIn: false }, async (app) => {

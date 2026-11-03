@@ -1,20 +1,37 @@
-import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
+import {
+  createContext,
+  useContext,
+  useEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type ReactNode,
+} from 'react';
+import { AppState as AppLifecycle } from 'react-native';
+
+import { useAuth } from '@/hooks/use-auth';
 
 import { useToday } from '@/hooks/use-today';
 import * as App from '@/lib/app-state';
 import type { AppState, Celebration, Outcome, Settings } from '@/lib/app-state';
 import type { ChallengeLength } from '@/lib/challenges';
+import { confirmAction } from '@/lib/confirm';
 import { toDateKey } from '@/lib/dates';
 import { playFeedback, playSelection } from '@/lib/feedback';
 import { createSampleHabits, type NewHabit } from '@/lib/habits';
 import type { ReminderSettings } from '@/lib/reminder-plan';
 import { syncReminders } from '@/lib/reminders';
 import { loadItem, saveItem } from '@/lib/storage';
+import { supabase } from '@/lib/supabase';
+import { SyncEngine, type SyncSnapshot } from '@/lib/sync-engine';
+import { supabaseRemote } from '@/lib/sync-remote';
 
-export type { Celebration, Settings };
+export type { Celebration, Settings, SyncSnapshot };
 
 const StorageKey = 'app:v2';
 const LegacyStorageKey = 'habits:v1';
+/** Sync bookkeeping: whose data this is, the pull cursor and unsent changes. */
+const SyncStorageKey = 'sync:v1';
 
 function loadState(): AppState {
   return App.restoreState(loadItem(StorageKey), loadItem(LegacyStorageKey));
@@ -39,6 +56,12 @@ type HabitsContextValue = AppState & {
   updateSettings: (changes: Partial<Settings>) => void;
   resetToSampleData: () => void;
   resetEverything: () => void;
+  /** Sync with the account: status, unsent changes, and whose data this device holds. */
+  sync: SyncSnapshot;
+  /** Syncs now (e.g. "Try again" after a failure). */
+  retrySync: () => void;
+  /** Signs out and clears this device, asking first if changes haven't reached the account. */
+  signOut: () => Promise<void>;
 };
 
 const HabitsContext = createContext<HabitsContextValue | null>(null);
@@ -50,6 +73,30 @@ export function HabitsProvider({ children }: { children: ReactNode }) {
   const latest = useRef(state);
   const today = useToday();
   const todayKey = toDateKey(today);
+  const { session } = useAuth();
+  const userId = session?.user.id ?? null;
+
+  const [engine] = useState(
+    () =>
+      new SyncEngine(
+        supabaseRemote,
+        { getState: () => latest.current, setState: replace },
+        { load: () => loadItem(SyncStorageKey), save: (value) => saveItem(SyncStorageKey, value) }
+      )
+  );
+  const sync = useSyncExternalStore(engine.subscribe, engine.getSnapshot, engine.getSnapshot);
+
+  useEffect(() => {
+    engine.setUser(userId);
+  }, [engine, userId]);
+
+  // Pick up changes from other devices when the app comes back to the foreground.
+  useEffect(() => {
+    const subscription = AppLifecycle.addEventListener('change', (status) => {
+      if (status === 'active') void engine.sync();
+    });
+    return () => subscription.remove();
+  }, [engine]);
 
   useEffect(() => {
     saveItem(StorageKey, JSON.stringify(state));
@@ -61,9 +108,15 @@ export function HabitsProvider({ children }: { children: ReactNode }) {
     // todayKey: reschedule after midnight so the window keeps rolling forward.
   }, [habits, challenge, settings.reminders, todayKey]);
 
-  function commit(next: AppState) {
+  /** Shows state without recording it as a local change (it came from the account). */
+  function replace(next: AppState) {
     latest.current = next;
     setState(next);
+  }
+
+  function commit(next: AppState) {
+    engine.recordChange(latest.current, next);
+    replace(next);
   }
 
   /** Applies a change that may earn a celebration. Uses the real clock, not the cached day. */
@@ -111,6 +164,25 @@ export function HabitsProvider({ children }: { children: ReactNode }) {
     resetEverything: () => {
       setPendingCelebration(null);
       commit(App.FreshState);
+    },
+    sync,
+    retrySync: () => void engine.sync(),
+    signOut: async () => {
+      const unsent = await engine.flush();
+      const signOut = async () => {
+        engine.forgetAccount();
+        setPendingCelebration(null);
+        replace(App.FreshState);
+        // Clears the session on this device even if the server can't be reached.
+        await supabase.auth.signOut();
+      };
+      if (unsent === 0) return signOut();
+      confirmAction(
+        'Sign out?',
+        "Some changes haven't been saved to your account yet (you may be offline). Signing out removes them from this device.",
+        'Sign out',
+        () => void signOut()
+      );
     },
   };
 

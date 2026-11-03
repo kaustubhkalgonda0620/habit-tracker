@@ -17,7 +17,6 @@ import {
   remindersSupported,
   requestReminderPermission,
 } from '@/lib/reminders';
-import { supabase } from '@/lib/supabase';
 
 const AccentColor = '#3c87f7';
 
@@ -37,7 +36,8 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 }
 
 export default function SettingsScreen() {
-  const { settings, updateSettings, resetToSampleData, resetEverything } = useHabits();
+  const { settings, updateSettings, resetToSampleData, resetEverything, sync, retrySync, signOut } =
+    useHabits();
   const { session } = useAuth();
   const [permission, setPermission] = useState<boolean | null>(null);
 
@@ -149,8 +149,21 @@ export default function SettingsScreen() {
         <ThemedText type="small" themeColor="textSecondary">
           Signed in as {session?.user.email}
         </ThemedText>
-        {/* Clears the session on this device even if the server can't be reached. */}
-        <Pressable onPress={() => supabase.auth.signOut()}>
+        <ThemedText type="small" themeColor="textSecondary">
+          {sync.status === 'offline'
+            ? "⚠️ Can't reach the server. Changes are kept on this device and will sync later."
+            : sync.status === 'syncing' || sync.pending > 0
+              ? 'Saving to your account…'
+              : '✅ Everything is saved to your account.'}
+        </ThemedText>
+        {sync.status === 'offline' && (
+          <Pressable onPress={retrySync}>
+            <ThemedText type="smallBold" style={{ color: AccentColor }}>
+              Try again
+            </ThemedText>
+          </Pressable>
+        )}
+        <Pressable onPress={signOut}>
           <ThemedText type="smallBold" style={{ color: AccentColor }}>
             Sign out
           </ThemedText>

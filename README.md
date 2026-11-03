@@ -8,7 +8,7 @@ A small habit tracker for iOS, Android, and the web, built with Expo (SDK 58) an
 - **Reminders:** local notifications at the times you choose (iOS and Android).
 - **Celebrations:** confetti, haptics, and sounds for perfect days and badges.
 
-You sign in with your email and a one-time code (Supabase Auth). Habit data is stored on the device for now (SQLite key-value store on native, `localStorage` on web); syncing it to your account is in progress.
+You sign in with your email and a one-time code (Supabase Auth). Your habits are kept on the device (SQLite key-value store on native, `localStorage` on web), so the app is fast and works offline, and synced to your account in the background, so they follow you to other devices. Signing out removes them from the device.
 
 To run it, put your Supabase project's `EXPO_PUBLIC_SUPABASE_URL` and `EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY` in `.env.local`.
 

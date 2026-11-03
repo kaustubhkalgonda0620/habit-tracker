@@ -12,6 +12,15 @@ import { join } from 'node:path';
 import { after, before, test } from 'node:test';
 import { chromium } from 'playwright-core';
 
+import {
+  AUTH_KEY,
+  fakeSession,
+  FakeSupabase,
+  SUPABASE_URL,
+  TEST_CODE,
+  TEST_EMAIL,
+} from './fake-supabase.mjs';
+
 export const BASE_URL = process.env.BASE_URL ?? 'http://localhost:8081';
 const CHROME_PATH =
   process.env.CHROME_PATH ?? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
@@ -68,65 +77,14 @@ export function saved(habits, overrides = {}) {
   };
 }
 
-// ---------- Auth ----------
-// Supabase is faked in the browser: tests never reach the real project or need a real email.
+// ---------- Supabase ----------
+// Faked in the browser (support/fake-supabase.mjs): sign-in codes, and the account's tables.
 
-export const TEST_EMAIL = 'tester@example.com';
-/** Codes the fake server accepts. Supabase sends 6–10 digits depending on a project setting. */
-export const TEST_CODE = '123456';
-export const TEST_LONG_CODE = '12345678';
-const AUTH_KEY = 'auth:v1'; // storageKey in src/lib/supabase.web.ts
-const SUPABASE_URL = /^https:\/\/[^/]+\.supabase\.co\//;
-
-function fakeSession(email = TEST_EMAIL) {
-  const base64url = (value) => Buffer.from(JSON.stringify(value)).toString('base64url');
-  const expiresAt = Math.floor(Date.now() / 1000) + 365 * 24 * 60 * 60;
-  const user = {
-    id: '00000000-0000-4000-8000-000000000001',
-    aud: 'authenticated',
-    role: 'authenticated',
-    email,
-    app_metadata: { provider: 'email', providers: ['email'] },
-    user_metadata: {},
-    created_at: '2026-01-01T00:00:00Z',
-  };
-  return {
-    access_token: `${base64url({ alg: 'HS256', typ: 'JWT' })}.${base64url({ sub: user.id, email, role: 'authenticated', exp: expiresAt })}.test`,
-    refresh_token: 'test-refresh-token',
-    token_type: 'bearer',
-    expires_in: expiresAt - Math.floor(Date.now() / 1000),
-    expires_at: expiresAt,
-    user,
-  };
-}
+export { account, TEST_CODE, TEST_EMAIL, TEST_LONG_CODE } from './fake-supabase.mjs';
 
 /** Saved session for a signed-in user, as localStorage entries. Scenarios include it by default. */
 export function signedIn(email = TEST_EMAIL) {
   return { [AUTH_KEY]: JSON.stringify(fakeSession(email)) };
-}
-
-/**
- * Answers Supabase requests like the real auth API would. Records each request in `log` as
- * `"<path> <email>"`; anything it doesn't handle is reported in `problems` and fails the test.
- */
-async function fakeSupabase(context, log, problems) {
-  await context.route(SUPABASE_URL, async (route) => {
-    const request = route.request();
-    const path = new URL(request.url()).pathname;
-    const body = request.postDataJSON?.() ?? {};
-    log.push(`${path} ${body.email ?? ''}`.trim());
-    const json = (status, data) =>
-      route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(data) });
-    if (path === '/auth/v1/otp') return json(200, {});
-    if (path === '/auth/v1/verify') {
-      return body.token === TEST_CODE || body.token === TEST_LONG_CODE
-        ? json(200, fakeSession(body.email))
-        : json(403, { code: 403, error_code: 'otp_expired', msg: 'Token has expired or is invalid' });
-    }
-    if (path === '/auth/v1/logout') return route.fulfill({ status: 204 });
-    problems.push(`unexpected Supabase request: ${request.method()} ${path}`);
-    return json(404, {});
-  });
 }
 
 // ---------- Scenarios ----------
@@ -134,7 +92,8 @@ async function fakeSupabase(context, log, problems) {
 /**
  * Declares a browser test. `sanity: true` puts it in the sanity suite too.
  * `storage` seeds localStorage once before the app first loads (reloads keep app changes).
- * Scenarios start signed in unless `signedIn: false`.
+ * Scenarios start signed in unless `signedIn: false`. `account` seeds the account's tables on the
+ * fake server (via `account(...)`); it starts empty.
  */
 export function scenario(name, options, run) {
   const { sanity = false, storage = {}, path = '/', viewport, colorScheme } = options;
@@ -152,8 +111,8 @@ export function scenario(name, options, run) {
     }, seed);
 
     const problems = [];
-    const authRequests = [];
-    await fakeSupabase(context, authRequests, problems);
+    const supabase = new FakeSupabase(problems, options.account);
+    await supabase.attach(context);
 
     const page = await context.newPage();
     page.setDefaultTimeout(TIMEOUT);
@@ -174,9 +133,13 @@ export function scenario(name, options, run) {
       if (response.status() >= 400) network.push(`${response.status()}: ${response.url().slice(0, 150)}`);
     });
     // Confirmations (delete, reset) are accepted, as a user tapping "OK" would.
-    page.on('dialog', (dialog) => dialog.accept());
+    const dialogs = [];
+    page.on('dialog', (dialog) => {
+      dialogs.push(dialog.message());
+      dialog.accept();
+    });
 
-    const app = new App(page, authRequests);
+    const app = new App(page, supabase, dialogs);
     try {
       await app.goto(path);
       await run(app);
@@ -202,10 +165,35 @@ export function scenario(name, options, run) {
 // ---------- Page helpers ----------
 
 class App {
-  constructor(page, authRequests = []) {
+  constructor(page, supabase, dialogs) {
     this.page = page;
-    /** Requests the app made to (fake) Supabase, as `"<path> <email>"`. */
-    this.authRequests = authRequests;
+    /** The fake Supabase: `rows(table)`, `write(table, row)`, `online`. */
+    this.supabase = supabase;
+    /** Messages of confirmation dialogs shown so far (all were accepted). */
+    this.dialogs = dialogs;
+  }
+
+  /** Auth requests the app made, as `"<path> <email>"`. */
+  get authRequests() {
+    return this.supabase.authRequests;
+  }
+
+  /** Retries `check` (which throws on failure) until it passes or times out. */
+  async eventually(check, timeout = TIMEOUT) {
+    const deadline = Date.now() + timeout;
+    for (;;) {
+      try {
+        return await check();
+      } catch (error) {
+        if (Date.now() > deadline) throw error;
+        await this.page.waitForTimeout(100);
+      }
+    }
+  }
+
+  /** Waits until the account rows of `table` satisfy `check`. */
+  async serverHas(table, check, message) {
+    await this.eventually(() => assert.ok(check(this.supabase.rows(table)), message ?? `server ${table} rows`));
   }
 
   async goto(path) {

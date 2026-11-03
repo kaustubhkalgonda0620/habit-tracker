@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import { ActivityIndicator, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import Animated, { FadeInDown } from 'react-native-reanimated';
 
 import { ChoiceChips } from '@/components/choice-chips';
@@ -81,7 +81,7 @@ function HabitOption({ habit, selected, onPress }: { habit: NewHabit; selected: 
 
 export default function OnboardingScreen() {
   const theme = useTheme();
-  const { completeOnboarding, settings, onboarded } = useHabits();
+  const { completeOnboarding, settings, onboarded, sync, retrySync } = useHabits();
   const { session } = useAuth();
   const [step, setStep] = useState(0);
   const [selected, setSelected] = useState<NewHabit[]>([SuggestedHabits[0], SuggestedHabits[1]]);
@@ -146,6 +146,34 @@ export default function OnboardingScreen() {
         <Animated.View entering={FadeInDown.duration(350)} style={styles.step}>
           <SignIn color={AccentColor} returning={onboarded} />
         </Animated.View>
+      </ScreenScrollView>
+    );
+  }
+
+  if (sync.syncedUser !== session.user.id) {
+    // Wait for the account's data: if it already has habits, this device skips setup.
+    return (
+      <ScreenScrollView standalone>
+        <View style={[styles.step, styles.loading]}>
+          {sync.status === 'offline' ? (
+            <>
+              <ThemedText type="subtitle" style={styles.center}>
+                Couldn&apos;t load your account
+              </ThemedText>
+              <ThemedText themeColor="textSecondary" style={styles.center}>
+                Check your connection and try again.
+              </ThemedText>
+              <PrimaryButton label="Try again" color={AccentColor} onPress={retrySync} />
+            </>
+          ) : (
+            <>
+              <ActivityIndicator color={AccentColor} />
+              <ThemedText themeColor="textSecondary" style={styles.center}>
+                Loading your account…
+              </ThemedText>
+            </>
+          )}
+        </View>
       </ScreenScrollView>
     );
   }
@@ -343,6 +371,10 @@ const styles = StyleSheet.create({
   },
   center: {
     textAlign: 'center',
+  },
+  loading: {
+    alignItems: 'stretch',
+    paddingTop: Spacing.six,
   },
   pressed: {
     opacity: 0.5,
